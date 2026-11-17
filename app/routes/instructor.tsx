@@ -1,16 +1,25 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
 import { getCoursesByInstructor, getLessonCountForCourse } from "~/services/courseService";
-import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
+import { getInstructorAnalytics } from "~/services/instructorAnalyticsService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  DollarSign,
+  GraduationCap,
+  MessageCircleQuestion,
+  Plus,
+  Users,
+} from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
 import { CourseStatus, UserRole } from "~/db/schema";
+import { formatPrice } from "~/lib/utils";
 
 export function meta() {
   return [
@@ -37,10 +46,14 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const instructorCourses = getCoursesByInstructor(currentUserId);
+  const analytics = getInstructorAnalytics(currentUserId);
+  const statsByCourse = new Map(
+    analytics.courses.map((stats) => [stats.courseId, stats])
+  );
 
   const coursesWithStats = instructorCourses.map((course) => {
     const lessonCount = getLessonCountForCourse(course.id);
-    const enrollmentCount = getEnrollmentCountForCourse(course.id);
+    const stats = statsByCourse.get(course.id);
 
     return {
       id: course.id,
@@ -50,13 +63,45 @@ export async function loader({ request }: Route.LoaderArgs) {
       status: course.status,
       coverImageUrl: course.coverImageUrl,
       lessonCount,
-      enrollmentCount,
+      enrollmentCount: stats?.enrollments ?? 0,
+      revenueCents: stats?.revenueCents ?? 0,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
   });
 
-  return { courses: coursesWithStats };
+  return { courses: coursesWithStats, summary: analytics.summary };
+}
+
+// formatPrice renders 0 as "Free", which reads wrong for earnings.
+function formatRevenue(cents: number) {
+  return cents === 0 ? "$0.00" : formatPrice(cents);
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  to,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  to?: string;
+}) {
+  const card = (
+    <Card className={to ? "h-full transition-colors hover:bg-muted/50" : "h-full"}>
+      <CardContent>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Icon className="size-4" />
+          <span>{label}</span>
+        </div>
+        <div className="mt-2 text-2xl font-bold">{value}</div>
+      </CardContent>
+    </Card>
+  );
+
+  return to ? <Link to={to}>{card}</Link> : card;
 }
 
 function statusBadge(status: string) {
@@ -94,6 +139,16 @@ export function HydrateFallback() {
         </div>
         <Skeleton className="h-10 w-32" />
       </div>
+      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent>
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="mt-3 h-7 w-16" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 3 }).map((_, i) => (
           <Card key={i} className="flex flex-col">
@@ -121,7 +176,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { courses, summary } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -147,6 +202,25 @@ export default function InstructorDashboard({
             New Course
           </Button>
         </Link>
+      </div>
+
+      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
+        <StatCard
+          icon={Users}
+          label="Unique students"
+          value={summary.uniqueStudents.toLocaleString()}
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Revenue"
+          value={formatRevenue(summary.revenueCents)}
+        />
+        <StatCard
+          icon={MessageCircleQuestion}
+          label="Unanswered questions"
+          value={summary.unansweredQuestions.toLocaleString()}
+          to="/instructor/questions"
+        />
       </div>
 
       {courses.length === 0 ? (
@@ -203,6 +277,10 @@ export default function InstructorDashboard({
                       {course.enrollmentCount}{" "}
                       {course.enrollmentCount === 1 ? "student" : "students"}
                     </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <DollarSign className="size-4" />
+                    <span>{formatRevenue(course.revenueCents)}</span>
                   </div>
                 </div>
               </CardContent>
