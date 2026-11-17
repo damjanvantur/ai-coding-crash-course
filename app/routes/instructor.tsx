@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   BookOpen,
   CircleCheck,
+  ClipboardCheck,
   DollarSign,
   GraduationCap,
   MessageCircleQuestion,
@@ -68,6 +69,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       enrollmentCount: stats?.enrollments ?? 0,
       revenueCents: stats?.revenueCents ?? 0,
       completionRate: stats?.completionRate ?? null,
+      avgQuizScore: stats?.avgQuizScore ?? null,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
@@ -90,11 +92,13 @@ function StatCard({
   icon: Icon,
   label,
   value,
+  subtitle,
   to,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
+  subtitle?: string;
   to?: string;
 }) {
   const card = (
@@ -105,6 +109,9 @@ function StatCard({
           <span>{label}</span>
         </div>
         <div className="mt-2 text-2xl font-bold">{value}</div>
+        {subtitle && (
+          <div className="mt-1 text-xs text-muted-foreground">{subtitle}</div>
+        )}
       </CardContent>
     </Card>
   );
@@ -148,7 +155,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
-        {Array.from({ length: 5 }).map((_, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <Card key={i}>
             <CardContent>
               <Skeleton className="h-4 w-24" />
@@ -167,6 +174,7 @@ export function HydrateFallback() {
             </CardHeader>
             <CardContent className="flex-1">
               <div className="flex flex-wrap items-center gap-4">
+                <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
@@ -234,6 +242,12 @@ export default function InstructorDashboard({
           icon={TrendingUp}
           label="Avg progress"
           value={formatPercent(summary.avgProgress)}
+        />
+        <StatCard
+          icon={ClipboardCheck}
+          label="Avg quiz score"
+          value={formatPercent(summary.avgQuizScore)}
+          subtitle={`${formatPercent(summary.quizPassRate)} pass rate`}
         />
         <StatCard
           icon={MessageCircleQuestion}
@@ -308,6 +322,13 @@ export default function InstructorDashboard({
                   >
                     <CircleCheck className="size-4" />
                     <span>{formatPercent(course.completionRate)} complete</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="Avg quiz score"
+                  >
+                    <ClipboardCheck className="size-4" />
+                    <span>{formatPercent(course.avgQuizScore)}</span>
                   </div>
                 </div>
               </CardContent>

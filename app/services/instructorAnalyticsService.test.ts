@@ -18,6 +18,7 @@ import { createPurchase, createTeamPurchase } from "./purchaseService";
 import { redeemCoupon } from "./couponService";
 import { createComment } from "./commentService";
 import { markLessonComplete, markLessonInProgress } from "./progressService";
+import { createQuiz, recordAttempt } from "./quizService";
 
 function createUser(
   name: string,
@@ -75,6 +76,10 @@ function enrollWithProgress(
 ) {
   enrollUser(userId, courseId, false, false);
   for (const lesson of completedLessons) markLessonComplete(userId, lesson.id);
+}
+
+function createCourseQuiz(courseId: number, passingScore = 0.7) {
+  return createQuiz(createLesson(courseId).id, "Quiz", passingScore);
 }
 
 function courseStats(
@@ -309,6 +314,93 @@ describe("getInstructorAnalytics", () => {
 
       expect(analytics.summary.completionRate).toBe(50);
       expect(analytics.summary.avgProgress).toBe(50);
+    });
+  });
+
+  describe("quiz score", () => {
+    it("counts each student's best attempt rather than their latest", () => {
+      const quiz = createCourseQuiz(base.course.id);
+      recordAttempt(base.user.id, quiz.id, 0.9, true);
+      recordAttempt(base.user.id, quiz.id, 0.5, false);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.avgQuizScore).toBe(90);
+      expect(analytics.summary.avgQuizScore).toBe(90);
+    });
+
+    it("counts a best score exactly equal to the passing score as a pass, ignoring the stored passed flag", () => {
+      const quiz = createCourseQuiz(base.course.id, 0.7);
+      const other = createUser("Other", "other@example.com");
+      recordAttempt(base.user.id, quiz.id, 0.7, false);
+      recordAttempt(other.id, quiz.id, 0.6, true);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.quizPassRate).toBe(50);
+    });
+
+    it("judges each quiz by its own passing score", () => {
+      const lenient = createCourseQuiz(base.course.id, 0.5);
+      const strict = createCourseQuiz(base.course.id, 0.9);
+      recordAttempt(base.user.id, lenient.id, 0.6, false);
+      recordAttempt(base.user.id, strict.id, 0.8, true);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.quizPassRate).toBe(50);
+      expect(analytics.summary.avgQuizScore).toBe(70);
+    });
+
+    it("is null when there are no attempts, and for a course with no quizzes", () => {
+      createCourseQuiz(base.course.id);
+      const noQuizzes = createCourse("no-quizzes", base.instructor.id);
+      enrollUser(base.user.id, noQuizzes.id, false, false);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgQuizScore).toBeNull();
+      expect(analytics.summary.quizPassRate).toBeNull();
+      expect(courseStats(analytics, base.course.id)?.avgQuizScore).toBeNull();
+      expect(courseStats(analytics, noQuizzes.id)?.avgQuizScore).toBeNull();
+    });
+
+    it("pools the summary across every (student, quiz) pair of all courses", () => {
+      const second = createCourse("second", base.instructor.id);
+      const firstQuiz = createCourseQuiz(base.course.id, 0.7);
+      const secondQuiz = createCourseQuiz(second.id, 0.7);
+      const other = createUser("Other", "other@example.com");
+      const third = createUser("Third", "third@example.com");
+      recordAttempt(base.user.id, firstQuiz.id, 1, true);
+      recordAttempt(base.user.id, secondQuiz.id, 0.4, false);
+      recordAttempt(other.id, secondQuiz.id, 0.5, false);
+      recordAttempt(third.id, secondQuiz.id, 0.9, true);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.avgQuizScore).toBe(100);
+      expect(courseStats(analytics, second.id)?.avgQuizScore).toBe(60);
+      // Pooled pairs (100 + 40 + 50 + 90) / 4, not the mean of course averages.
+      expect(analytics.summary.avgQuizScore).toBe(70);
+      expect(analytics.summary.quizPassRate).toBe(50);
+    });
+
+    it("excludes another instructor's quiz attempts", () => {
+      const otherInstructor = createUser(
+        "Other Instructor",
+        "other-instructor@example.com",
+        schema.UserRole.Instructor
+      );
+      const theirs = createCourse("theirs", otherInstructor.id);
+      const theirQuiz = createCourseQuiz(theirs.id);
+      const ownQuiz = createCourseQuiz(base.course.id);
+      recordAttempt(base.user.id, theirQuiz.id, 0.2, false);
+      recordAttempt(base.user.id, ownQuiz.id, 0.8, true);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgQuizScore).toBe(80);
+      expect(analytics.summary.quizPassRate).toBe(100);
     });
   });
 });
