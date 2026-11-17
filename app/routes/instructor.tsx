@@ -10,10 +10,12 @@ import { Skeleton } from "~/components/ui/skeleton";
 import {
   AlertTriangle,
   BookOpen,
+  CircleCheck,
   DollarSign,
   GraduationCap,
   MessageCircleQuestion,
   Plus,
+  TrendingUp,
   Users,
 } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
@@ -63,6 +65,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       lessonCount,
       enrollmentCount: stats?.enrollments ?? 0,
       revenueCents: stats?.revenueCents ?? 0,
+      completionRate: stats?.completionRate ?? null,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
@@ -74,6 +77,11 @@ export async function loader({ request }: Route.LoaderArgs) {
 // Revenue is an amount earned, so zero reads "$0.00" rather than "Free".
 function formatRevenue(cents: number) {
   return cents === 0 ? "$0.00" : formatPrice(cents);
+}
+
+// Percentages that can't be computed (no enrollments) read "—", not "0%".
+function formatPercent(value: number | null) {
+  return value === null ? "—" : `${value}%`;
 }
 
 function StatCard({
@@ -138,7 +146,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, i) => (
+        {Array.from({ length: 5 }).map((_, i) => (
           <Card key={i} className="gap-2 py-4">
             <CardHeader className="px-4">
               <Skeleton className="h-4 w-24" />
@@ -158,7 +166,9 @@ export function HydrateFallback() {
               <Skeleton className="h-4 w-full" />
             </CardHeader>
             <CardContent className="flex-1">
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-4">
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
               </div>
@@ -215,6 +225,16 @@ export default function InstructorDashboard({
           label="Revenue"
           value={formatRevenue(summary.revenueCents)}
         />
+        <StatCard
+          icon={CircleCheck}
+          label="Completion rate"
+          value={formatPercent(summary.completionRate)}
+        />
+        <StatCard
+          icon={TrendingUp}
+          label="Avg progress"
+          value={formatPercent(summary.avgProgress)}
+        />
         <Link
           to="/instructor/questions"
           className="block rounded-xl"
@@ -268,7 +288,7 @@ export default function InstructorDashboard({
                 </p>
               </CardHeader>
               <CardContent className="flex-1">
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
                   <div className="flex items-center gap-1.5">
                     <BookOpen className="size-4" />
                     <span>
@@ -286,6 +306,13 @@ export default function InstructorDashboard({
                   <div className="flex items-center gap-1.5">
                     <DollarSign className="size-4" />
                     <span>{formatRevenue(course.revenueCents)}</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="Completion rate"
+                  >
+                    <CircleCheck className="size-4" />
+                    <span>{formatPercent(course.completionRate)} complete</span>
                   </div>
                 </div>
               </CardContent>

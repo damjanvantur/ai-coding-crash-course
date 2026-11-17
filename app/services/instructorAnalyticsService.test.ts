@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { CourseStatus, UserRole } from "~/db/schema";
+import { CourseStatus, LessonProgressStatus, UserRole } from "~/db/schema";
 
 let testDb: ReturnType<typeof createTestDb>;
 let base: ReturnType<typeof seedBaseData>;
@@ -105,6 +105,25 @@ function ask(userId: number, lessonId: number, parentId: number | null = null) {
     .get();
 }
 
+function recordLessonProgress(
+  userId: number,
+  lessonId: number,
+  status: LessonProgressStatus = LessonProgressStatus.Completed
+) {
+  testDb
+    .insert(schema.lessonProgress)
+    .values({
+      userId,
+      lessonId,
+      status,
+      completedAt:
+        status === LessonProgressStatus.Completed
+          ? new Date().toISOString()
+          : null,
+    })
+    .run();
+}
+
 function courseStats(instructorId: number, courseId: number) {
   return getInstructorAnalytics(instructorId).courses.find(
     (c) => c.courseId === courseId
@@ -121,7 +140,13 @@ describe("getInstructorAnalytics", () => {
     const loner = createUser(UserRole.Instructor);
 
     expect(getInstructorAnalytics(loner.id)).toEqual({
-      summary: { uniqueStudents: 0, revenueCents: 0, unansweredQuestions: 0 },
+      summary: {
+        uniqueStudents: 0,
+        revenueCents: 0,
+        unansweredQuestions: 0,
+        completionRate: null,
+        avgProgress: null,
+      },
       courses: [],
     });
   });
@@ -172,6 +197,7 @@ describe("getInstructorAnalytics", () => {
       courseId: free.id,
       enrollments: 1,
       revenueCents: 0,
+      completionRate: 0,
     });
   });
 
@@ -206,6 +232,8 @@ describe("getInstructorAnalytics", () => {
       uniqueStudents: 1,
       revenueCents: 4999,
       unansweredQuestions: 0,
+      completionRate: 0,
+      avgProgress: 0,
     });
   });
 
@@ -221,5 +249,105 @@ describe("getInstructorAnalytics", () => {
     expect(
       getInstructorAnalytics(base.instructor.id).summary.unansweredQuestions
     ).toBe(2);
+  });
+
+  describe("completion and progress", () => {
+    it("counts an enrollment complete only when every lesson is completed", () => {
+      const first = createLesson(base.course.id);
+      const second = createLesson(base.course.id);
+      const finisher = createUser();
+      const straggler = createUser();
+      enroll(finisher.id, base.course.id);
+      enroll(straggler.id, base.course.id);
+      recordLessonProgress(finisher.id, first.id);
+      recordLessonProgress(finisher.id, second.id);
+      recordLessonProgress(straggler.id, first.id);
+      recordLessonProgress(straggler.id, second.id, LessonProgressStatus.InProgress);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.completionRate).toBe(50);
+      expect(analytics.summary.completionRate).toBe(50);
+      // (2/2 + 1/2) / 2 enrollments
+      expect(analytics.summary.avgProgress).toBe(75);
+    });
+
+    it("rounds to whole-number percents", () => {
+      const lessons = [1, 2, 3].map(() => createLesson(base.course.id));
+      const students = [1, 2, 3].map(() => createUser());
+      students.forEach((s) => enroll(s.id, base.course.id));
+      lessons.forEach((l) => recordLessonProgress(students[0].id, l.id));
+      recordLessonProgress(students[1].id, lessons[0].id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      // 1 of 3 complete; progress (3/3 + 1/3 + 0) / 3
+      expect(analytics.summary.completionRate).toBe(33);
+      expect(analytics.summary.avgProgress).toBe(44);
+    });
+
+    it("ignores a lesson completed in another course", () => {
+      createLesson(base.course.id);
+      const elsewhere = createCourse(base.instructor.id);
+      const otherLesson = createLesson(elsewhere.id);
+      enroll(base.user.id, base.course.id);
+      recordLessonProgress(base.user.id, otherLesson.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.completionRate).toBe(0);
+    });
+
+    it("never counts an enrollment in a zero-lesson course as complete", () => {
+      enroll(base.user.id, base.course.id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.completionRate).toBe(0);
+      expect(analytics.summary.completionRate).toBe(0);
+      expect(analytics.summary.avgProgress).toBe(0);
+    });
+
+    it("returns null when a course or instructor has no enrollments", () => {
+      const lesson = createLesson(base.course.id);
+      recordLessonProgress(base.user.id, lesson.id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.completionRate).toBeNull();
+      expect(analytics.summary.completionRate).toBeNull();
+      expect(analytics.summary.avgProgress).toBeNull();
+    });
+
+    it("pools the summary across enrollments rather than averaging courses", () => {
+      // Course A: 1 student, complete. Course B: 3 students, none complete.
+      const lessonA = createLesson(base.course.id);
+      enroll(base.user.id, base.course.id);
+      recordLessonProgress(base.user.id, lessonA.id);
+      const courseB = createCourse(base.instructor.id);
+      createLesson(courseB.id);
+      [1, 2, 3].forEach(() => enroll(createUser().id, courseB.id));
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.completionRate).toBe(100);
+      expect(courseStats(base.instructor.id, courseB.id)?.completionRate).toBe(0);
+      expect(analytics.summary.completionRate).toBe(25);
+      expect(analytics.summary.avgProgress).toBe(25);
+    });
+
+    it("excludes another instructor's students' progress", () => {
+      const rival = createUser(UserRole.Instructor);
+      const rivalCourse = createCourse(rival.id);
+      const rivalLesson = createLesson(rivalCourse.id);
+      const rivalStudent = createUser();
+      enroll(rivalStudent.id, rivalCourse.id);
+      recordLessonProgress(rivalStudent.id, rivalLesson.id);
+      createLesson(base.course.id);
+      enroll(base.user.id, base.course.id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.completionRate).toBe(0);
+      expect(analytics.summary.avgProgress).toBe(0);
+    });
   });
 });
