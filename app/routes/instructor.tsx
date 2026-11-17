@@ -10,6 +10,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 import {
   AlertTriangle,
   BookOpen,
+  ClipboardCheck,
   DollarSign,
   GraduationCap,
   MessageCircleQuestion,
@@ -65,6 +66,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       lessonCount,
       enrollmentCount: stats?.enrollments ?? 0,
       revenueCents: stats?.revenueCents ?? 0,
+      avgQuizScore: stats?.avgQuizScore ?? null,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
@@ -78,15 +80,22 @@ function formatRevenue(cents: number) {
   return cents === 0 ? "$0.00" : formatPrice(cents);
 }
 
+// Analytics percents are null when there is nothing to measure yet.
+function formatPercent(value: number | null) {
+  return value === null ? "—" : `${value}%`;
+}
+
 function StatCard({
   icon: Icon,
   label,
   value,
+  subtitle,
   to,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
+  subtitle?: string;
   to?: string;
 }) {
   const card = (
@@ -97,6 +106,9 @@ function StatCard({
           <span>{label}</span>
         </div>
         <div className="mt-2 text-2xl font-bold">{value}</div>
+        {subtitle && (
+          <div className="mt-1 text-xs text-muted-foreground">{subtitle}</div>
+        )}
       </CardContent>
     </Card>
   );
@@ -140,7 +152,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, i) => (
+        {Array.from({ length: 4 }).map((_, i) => (
           <Card key={i}>
             <CardContent>
               <Skeleton className="h-4 w-24" />
@@ -221,6 +233,12 @@ export default function InstructorDashboard({
           value={summary.unansweredQuestions.toLocaleString()}
           to="/instructor/questions"
         />
+        <StatCard
+          icon={ClipboardCheck}
+          label="Avg quiz score"
+          value={formatPercent(summary.avgQuizScore)}
+          subtitle={`${formatPercent(summary.quizPassRate)} pass rate`}
+        />
       </div>
 
       {courses.length === 0 ? (
@@ -281,6 +299,13 @@ export default function InstructorDashboard({
                   <div className="flex items-center gap-1.5">
                     <DollarSign className="size-4" />
                     <span>{formatRevenue(course.revenueCents)}</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="Avg quiz score"
+                  >
+                    <ClipboardCheck className="size-4" />
+                    <span>{formatPercent(course.avgQuizScore)}</span>
                   </div>
                 </div>
               </CardContent>
