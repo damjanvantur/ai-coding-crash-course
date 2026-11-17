@@ -1,4 +1,4 @@
-import { and, count, countDistinct, eq, sql, sum } from "drizzle-orm";
+import { and, count, countDistinct, eq, max, sql, sum } from "drizzle-orm";
 import { db } from "~/db";
 import {
   courses,
@@ -8,6 +8,8 @@ import {
   lessons,
   modules,
   purchases,
+  quizAttempts,
+  quizzes,
 } from "~/db/schema";
 import { getUnansweredQuestions } from "~/services/commentService";
 
@@ -23,12 +25,15 @@ export type InstructorAnalytics = {
     unansweredQuestions: number;
     completionRate: number | null;
     avgProgress: number | null;
+    avgQuizScore: number | null;
+    quizPassRate: number | null;
   };
   courses: Array<{
     courseId: number;
     enrollments: number;
     revenueCents: number;
     completionRate: number | null;
+    avgQuizScore: number | null;
   }>;
 };
 
@@ -115,6 +120,39 @@ export function getInstructorAnalytics(
     .groupBy(purchases.courseId)
     .as("revenue_totals");
 
+  // One row per (student, quiz) pair: the best attempt's score, judged against
+  // that quiz's own passing score. The stored `passed` flag is not trusted —
+  // historical rows were graded against a wrong threshold (see #4).
+  // courseId and passingScore are bare columns: both are fixed per quiz, and
+  // the group is per quiz, so SQLite returns that quiz's single value.
+  const bestAttempts = db
+    .select({
+      courseId: modules.courseId,
+      passingScore: quizzes.passingScore,
+      bestScore: max(quizAttempts.score).as("best_score"),
+    })
+    .from(quizAttempts)
+    .innerJoin(quizzes, eq(quizzes.id, quizAttempts.quizId))
+    .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(ownCourse)
+    .groupBy(quizAttempts.userId, quizAttempts.quizId)
+    .as("best_attempts");
+
+  const quizStats = db
+    .select({
+      courseId: bestAttempts.courseId,
+      quizPairs: count().as("quiz_pairs"),
+      bestScoreSum: sql<number>`sum(${bestAttempts.bestScore})`.as("best_score_sum"),
+      quizPasses: sql<number>`sum(case when ${bestAttempts.bestScore} >= ${bestAttempts.passingScore} then 1 else 0 end)`.as(
+        "quiz_passes"
+      ),
+    })
+    .from(bestAttempts)
+    .groupBy(bestAttempts.courseId)
+    .as("quiz_stats");
+
   const courseRows = db
     .select({
       courseId: courses.id,
@@ -122,10 +160,14 @@ export function getInstructorAnalytics(
       completedEnrollments: enrollmentStats.completedEnrollments,
       progressSum: enrollmentStats.progressSum,
       revenueCents: revenueTotals.revenueCents,
+      quizPairs: quizStats.quizPairs,
+      bestScoreSum: quizStats.bestScoreSum,
+      quizPasses: quizStats.quizPasses,
     })
     .from(courses)
     .leftJoin(enrollmentStats, eq(enrollmentStats.courseId, courses.id))
     .leftJoin(revenueTotals, eq(revenueTotals.courseId, courses.id))
+    .leftJoin(quizStats, eq(quizStats.courseId, courses.id))
     .where(ownCourse)
     .all()
     .map((row) => ({
@@ -134,6 +176,9 @@ export function getInstructorAnalytics(
       completedEnrollments: Number(row.completedEnrollments ?? 0),
       progressSum: Number(row.progressSum ?? 0),
       revenueCents: Number(row.revenueCents ?? 0),
+      quizPairs: row.quizPairs ?? 0,
+      bestScoreSum: Number(row.bestScoreSum ?? 0),
+      quizPasses: Number(row.quizPasses ?? 0),
     }));
 
   // A student enrolled in several of the instructor's courses counts once.
@@ -144,15 +189,27 @@ export function getInstructorAnalytics(
     .where(ownCourse)
     .get();
 
-  // Summary rates pool every enrollment, so busier courses weigh more.
+  // Summary rates pool every enrollment (and every student-quiz pair), so
+  // busier courses weigh more.
   const totals = courseRows.reduce(
     (acc, c) => ({
       enrollments: acc.enrollments + c.enrollments,
       completed: acc.completed + c.completedEnrollments,
       progress: acc.progress + c.progressSum,
       revenueCents: acc.revenueCents + c.revenueCents,
+      quizPairs: acc.quizPairs + c.quizPairs,
+      bestScoreSum: acc.bestScoreSum + c.bestScoreSum,
+      quizPasses: acc.quizPasses + c.quizPasses,
     }),
-    { enrollments: 0, completed: 0, progress: 0, revenueCents: 0 }
+    {
+      enrollments: 0,
+      completed: 0,
+      progress: 0,
+      revenueCents: 0,
+      quizPairs: 0,
+      bestScoreSum: 0,
+      quizPasses: 0,
+    }
   );
 
   return {
@@ -162,12 +219,15 @@ export function getInstructorAnalytics(
       unansweredQuestions: getUnansweredQuestions(instructorId).length,
       completionRate: percent(totals.completed, totals.enrollments),
       avgProgress: percent(totals.progress, totals.enrollments),
+      avgQuizScore: percent(totals.bestScoreSum, totals.quizPairs),
+      quizPassRate: percent(totals.quizPasses, totals.quizPairs),
     },
     courses: courseRows.map((c) => ({
       courseId: c.courseId,
       enrollments: c.enrollments,
       revenueCents: c.revenueCents,
       completionRate: percent(c.completedEnrollments, c.enrollments),
+      avgQuizScore: percent(c.bestScoreSum, c.quizPairs),
     })),
   };
 }

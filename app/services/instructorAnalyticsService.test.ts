@@ -124,6 +124,28 @@ function recordLessonProgress(
     .run();
 }
 
+const DEFAULT_PASSING_SCORE = 0.7;
+
+function createQuiz(courseId: number, passingScore = DEFAULT_PASSING_SCORE) {
+  const lesson = createLesson(courseId);
+  return testDb
+    .insert(schema.quizzes)
+    .values({ lessonId: lesson.id, title: "Quiz", passingScore })
+    .returning()
+    .get();
+}
+
+// `passed` is stored but untrusted; it defaults to the opposite of what the
+// score implies at the default threshold so tests prove it is ignored.
+function attempt(
+  userId: number,
+  quizId: number,
+  score: number,
+  passed = score < DEFAULT_PASSING_SCORE
+) {
+  testDb.insert(schema.quizAttempts).values({ userId, quizId, score, passed }).run();
+}
+
 function courseStats(instructorId: number, courseId: number) {
   return getInstructorAnalytics(instructorId).courses.find(
     (c) => c.courseId === courseId
@@ -146,6 +168,8 @@ describe("getInstructorAnalytics", () => {
         unansweredQuestions: 0,
         completionRate: null,
         avgProgress: null,
+        avgQuizScore: null,
+        quizPassRate: null,
       },
       courses: [],
     });
@@ -198,6 +222,7 @@ describe("getInstructorAnalytics", () => {
       enrollments: 1,
       revenueCents: 0,
       completionRate: 0,
+      avgQuizScore: null,
     });
   });
 
@@ -234,6 +259,8 @@ describe("getInstructorAnalytics", () => {
       unansweredQuestions: 0,
       completionRate: 0,
       avgProgress: 0,
+      avgQuizScore: null,
+      quizPassRate: null,
     });
   });
 
@@ -348,6 +375,111 @@ describe("getInstructorAnalytics", () => {
 
       expect(analytics.summary.completionRate).toBe(0);
       expect(analytics.summary.avgProgress).toBe(0);
+    });
+  });
+
+  describe("quiz score and pass rate", () => {
+    it("counts each student's best attempt rather than the latest", () => {
+      const quiz = createQuiz(base.course.id, 0.7);
+      attempt(base.user.id, quiz.id, 0.8);
+      attempt(base.user.id, quiz.id, 0.4);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgQuizScore).toBe(80);
+      expect(analytics.summary.quizPassRate).toBe(100);
+      expect(courseStats(base.instructor.id, base.course.id)?.avgQuizScore).toBe(80);
+    });
+
+    it("counts a best score exactly equal to the passing score as a pass", () => {
+      const quiz = createQuiz(base.course.id, 0.6);
+      const other = createUser();
+      attempt(base.user.id, quiz.id, 0.6);
+      attempt(other.id, quiz.id, 0.5);
+
+      expect(getInstructorAnalytics(base.instructor.id).summary.quizPassRate).toBe(50);
+    });
+
+    it("ignores the stored passed flag", () => {
+      const quiz = createQuiz(base.course.id, 0.7);
+      const [passer, failer] = [createUser(), createUser()];
+      attempt(base.user.id, quiz.id, 0.9, false);
+      attempt(passer.id, quiz.id, 0.8, false);
+      attempt(failer.id, quiz.id, 0.3, true);
+
+      // Trusting the flag would give 33%
+      expect(getInstructorAnalytics(base.instructor.id).summary.quizPassRate).toBe(67);
+    });
+
+    it("judges each quiz by its own passing score", () => {
+      const lenient = createQuiz(base.course.id, 0.5);
+      const strict = createQuiz(base.course.id, 0.9);
+      attempt(base.user.id, lenient.id, 0.6);
+      attempt(base.user.id, strict.id, 0.6);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.quizPassRate).toBe(50);
+      expect(analytics.summary.avgQuizScore).toBe(60);
+    });
+
+    it("averages best scores over students who attempted, rounded", () => {
+      const quiz = createQuiz(base.course.id);
+      const [a, b, c] = [1, 2, 3].map(() => createUser());
+      [a, b, c, createUser()].forEach((s) => enroll(s.id, base.course.id));
+      attempt(a.id, quiz.id, 1);
+      attempt(b.id, quiz.id, 0.5);
+      attempt(c.id, quiz.id, 0.5);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      // (100 + 50 + 50) / 3 attempted — the never-attempted enrollee is excluded
+      expect(analytics.summary.avgQuizScore).toBe(67);
+      expect(analytics.summary.quizPassRate).toBe(33);
+    });
+
+    it("returns null when there are no attempts, including a course with no quizzes", () => {
+      createQuiz(base.course.id);
+      enroll(base.user.id, base.course.id);
+      const quizless = createCourse(base.instructor.id);
+      createLesson(quizless.id);
+      enroll(base.user.id, quizless.id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgQuizScore).toBeNull();
+      expect(analytics.summary.quizPassRate).toBeNull();
+      expect(courseStats(base.instructor.id, base.course.id)?.avgQuizScore).toBeNull();
+      expect(courseStats(base.instructor.id, quizless.id)?.avgQuizScore).toBeNull();
+    });
+
+    it("pools the summary across student-quiz pairs of all courses", () => {
+      // Course A: one pair at 100%. Course B: three pairs at 0%.
+      const quizA = createQuiz(base.course.id);
+      attempt(base.user.id, quizA.id, 1);
+      const courseB = createCourse(base.instructor.id);
+      const quizB = createQuiz(courseB.id);
+      [1, 2, 3].forEach(() => attempt(createUser().id, quizB.id, 0));
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(base.instructor.id, base.course.id)?.avgQuizScore).toBe(100);
+      expect(courseStats(base.instructor.id, courseB.id)?.avgQuizScore).toBe(0);
+      expect(analytics.summary.avgQuizScore).toBe(25);
+      expect(analytics.summary.quizPassRate).toBe(25);
+    });
+
+    it("excludes another instructor's quiz attempts", () => {
+      const rival = createUser(UserRole.Instructor);
+      const rivalQuiz = createQuiz(createCourse(rival.id).id);
+      attempt(base.user.id, rivalQuiz.id, 1);
+      const quiz = createQuiz(base.course.id);
+      attempt(base.user.id, quiz.id, 0.2);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgQuizScore).toBe(20);
+      expect(analytics.summary.quizPassRate).toBe(0);
     });
   });
 });

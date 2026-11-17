@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   BookOpen,
   CircleCheck,
+  ClipboardCheck,
   DollarSign,
   GraduationCap,
   MessageCircleQuestion,
@@ -66,6 +67,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       enrollmentCount: stats?.enrollments ?? 0,
       revenueCents: stats?.revenueCents ?? 0,
       completionRate: stats?.completionRate ?? null,
+      avgQuizScore: stats?.avgQuizScore ?? null,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
@@ -79,7 +81,8 @@ function formatRevenue(cents: number) {
   return cents === 0 ? "$0.00" : formatPrice(cents);
 }
 
-// Percentages that can't be computed (no enrollments) read "—", not "0%".
+// Percentages that can't be computed (no enrollments or attempts) read "—",
+// not "0%".
 function formatPercent(value: number | null) {
   return value === null ? "—" : `${value}%`;
 }
@@ -88,11 +91,13 @@ function StatCard({
   icon: Icon,
   label,
   value,
+  subtitle,
   className,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
+  subtitle?: string;
   className?: string;
 }) {
   return (
@@ -105,6 +110,9 @@ function StatCard({
       </CardHeader>
       <CardContent className="px-4">
         <p className="text-2xl font-bold">{value}</p>
+        {subtitle && (
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+        )}
       </CardContent>
     </Card>
   );
@@ -146,7 +154,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-3">
-        {Array.from({ length: 5 }).map((_, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <Card key={i} className="gap-2 py-4">
             <CardHeader className="px-4">
               <Skeleton className="h-4 w-24" />
@@ -167,6 +175,7 @@ export function HydrateFallback() {
             </CardHeader>
             <CardContent className="flex-1">
               <div className="flex flex-wrap items-center gap-4">
+                <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-20" />
@@ -234,6 +243,12 @@ export default function InstructorDashboard({
           icon={TrendingUp}
           label="Avg progress"
           value={formatPercent(summary.avgProgress)}
+        />
+        <StatCard
+          icon={ClipboardCheck}
+          label="Avg quiz score"
+          value={formatPercent(summary.avgQuizScore)}
+          subtitle={`${formatPercent(summary.quizPassRate)} pass rate`}
         />
         <Link
           to="/instructor/questions"
@@ -313,6 +328,13 @@ export default function InstructorDashboard({
                   >
                     <CircleCheck className="size-4" />
                     <span>{formatPercent(course.completionRate)} complete</span>
+                  </div>
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="Avg quiz score"
+                  >
+                    <ClipboardCheck className="size-4" />
+                    <span>{formatPercent(course.avgQuizScore)} avg quiz</span>
                   </div>
                 </div>
               </CardContent>
