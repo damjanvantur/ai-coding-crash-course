@@ -17,6 +17,7 @@ import { enrollUser } from "./enrollmentService";
 import { createPurchase, createTeamPurchase } from "./purchaseService";
 import { redeemCoupon } from "./couponService";
 import { createComment } from "./commentService";
+import { markLessonComplete, markLessonInProgress } from "./progressService";
 
 function createUser(
   name: string,
@@ -61,6 +62,19 @@ function createLesson(courseId: number) {
     .values({ moduleId: mod.id, title: "Lesson", position: 1 })
     .returning()
     .get();
+}
+
+function createLessons(courseId: number, count: number) {
+  return Array.from({ length: count }, () => createLesson(courseId));
+}
+
+function enrollWithProgress(
+  userId: number,
+  courseId: number,
+  completedLessons: Array<{ id: number }>
+) {
+  enrollUser(userId, courseId, false, false);
+  for (const lesson of completedLessons) markLessonComplete(userId, lesson.id);
 }
 
 function courseStats(
@@ -152,7 +166,7 @@ describe("getInstructorAnalytics", () => {
     );
     expect(analytics.summary.uniqueStudents).toBe(2);
     expect(analytics.summary.revenueCents).toBe(3000);
-    expect(courseStats(analytics, archived.id)).toEqual({
+    expect(courseStats(analytics, archived.id)).toMatchObject({
       courseId: archived.id,
       enrollments: 1,
       revenueCents: 2000,
@@ -176,7 +190,7 @@ describe("getInstructorAnalytics", () => {
     const analytics = getInstructorAnalytics(base.instructor.id);
 
     expect(analytics.courses.map((c) => c.courseId)).toEqual([base.course.id]);
-    expect(analytics.summary).toEqual({
+    expect(analytics.summary).toMatchObject({
       uniqueStudents: 1,
       revenueCents: 4999,
       unansweredQuestions: 0,
@@ -194,5 +208,107 @@ describe("getInstructorAnalytics", () => {
     const analytics = getInstructorAnalytics(base.instructor.id);
 
     expect(analytics.summary.unansweredQuestions).toBe(2);
+  });
+
+  describe("completion and progress", () => {
+    it("counts an enrollment complete only when every lesson is completed", () => {
+      const lessons = createLessons(base.course.id, 2);
+      const other = createUser("Other", "other@example.com");
+      enrollWithProgress(base.user.id, base.course.id, lessons);
+      enrollWithProgress(other.id, base.course.id, [lessons[0]]);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.completionRate).toBe(50);
+      expect(analytics.summary.completionRate).toBe(50);
+    });
+
+    it("never counts an enrollment in a zero-lesson course as complete", () => {
+      enrollWithProgress(base.user.id, base.course.id, []);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.completionRate).toBe(0);
+      expect(analytics.summary.completionRate).toBe(0);
+    });
+
+    it("reports null completion and progress when there are no enrollments", () => {
+      createLessons(base.course.id, 2);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.completionRate).toBeNull();
+      expect(analytics.summary.completionRate).toBeNull();
+      expect(analytics.summary.avgProgress).toBeNull();
+    });
+
+    it("averages each enrollment's share of completed lessons", () => {
+      const lessons = createLessons(base.course.id, 4);
+      const other = createUser("Other", "other@example.com");
+      const third = createUser("Third", "third@example.com");
+      enrollWithProgress(base.user.id, base.course.id, lessons); // 100%
+      enrollWithProgress(other.id, base.course.id, lessons.slice(0, 1)); // 25%
+      enrollWithProgress(third.id, base.course.id, []); // 0%
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgProgress).toBe(42); // 125 / 3 = 41.67
+    });
+
+    it("pools the summary across enrollments, not per-course averages", () => {
+      const big = createCourse("big", base.instructor.id);
+      const bigLessons = createLessons(big.id, 2);
+      const smallLessons = createLessons(base.course.id, 2);
+      const students = ["a", "b", "c"].map((n) =>
+        createUser(n, `${n}@example.com`)
+      );
+      // Small course: 1 student, finished. Big course: 3 students, one half done.
+      enrollWithProgress(base.user.id, base.course.id, smallLessons);
+      enrollWithProgress(students[0].id, big.id, bigLessons.slice(0, 1));
+      enrollWithProgress(students[1].id, big.id, []);
+      enrollWithProgress(students[2].id, big.id, []);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.completionRate).toBe(100);
+      expect(courseStats(analytics, big.id)?.completionRate).toBe(0);
+      expect(analytics.summary.completionRate).toBe(25); // not (100 + 0) / 2
+      expect(analytics.summary.avgProgress).toBe(38); // (100 + 50) / 4 = 37.5
+    });
+
+    it("excludes another instructor's students' progress", () => {
+      const otherInstructor = createUser(
+        "Other Instructor",
+        "other-instructor@example.com",
+        schema.UserRole.Instructor
+      );
+      const theirs = createCourse("theirs", otherInstructor.id);
+      const theirLessons = createLessons(theirs.id, 1);
+      const ourLessons = createLessons(base.course.id, 2);
+      enrollWithProgress(base.user.id, theirs.id, theirLessons);
+      enrollWithProgress(base.user.id, base.course.id, []);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.completionRate).toBe(0);
+      expect(analytics.summary.avgProgress).toBe(0);
+    });
+
+    it("counts lessons only, ignoring quizzes and in-progress lessons", () => {
+      const lessons = createLessons(base.course.id, 2);
+      testDb
+        .insert(schema.quizzes)
+        .values({ lessonId: lessons[0].id, title: "Quiz", passingScore: 0.7 })
+        .run();
+      enrollWithProgress(base.user.id, base.course.id, lessons);
+      const other = createUser("Other", "other@example.com");
+      enrollWithProgress(other.id, base.course.id, []);
+      markLessonInProgress(other.id, lessons[0].id);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.completionRate).toBe(50);
+      expect(analytics.summary.avgProgress).toBe(50);
+    });
   });
 });
