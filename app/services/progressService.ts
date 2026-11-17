@@ -8,6 +8,7 @@ import {
   enrollments,
   LessonProgressStatus,
 } from "~/db/schema";
+import { findEnrollment, markEnrollmentComplete } from "~/services/enrollmentService";
 
 // ─── Progress Service ───
 // Handles lesson completion tracking and course progress calculation.
@@ -58,28 +59,52 @@ export function getLessonProgressForCourse(userId: number, courseId: number) {
 export function markLessonComplete(userId: number, lessonId: number) {
   const existing = getLessonProgress(userId, lessonId);
 
-  if (existing) {
-    return db
-      .update(lessonProgress)
-      .set({
-        status: LessonProgressStatus.Completed,
-        completedAt: new Date().toISOString(),
-      })
-      .where(eq(lessonProgress.id, existing.id))
-      .returning()
-      .get();
-  }
+  const progress = existing
+    ? db
+        .update(lessonProgress)
+        .set({
+          status: LessonProgressStatus.Completed,
+          completedAt: new Date().toISOString(),
+        })
+        .where(eq(lessonProgress.id, existing.id))
+        .returning()
+        .get()
+    : db
+        .insert(lessonProgress)
+        .values({
+          userId,
+          lessonId,
+          status: LessonProgressStatus.Completed,
+          completedAt: new Date().toISOString(),
+        })
+        .returning()
+        .get();
 
-  return db
-    .insert(lessonProgress)
-    .values({
-      userId,
-      lessonId,
-      status: LessonProgressStatus.Completed,
-      completedAt: new Date().toISOString(),
-    })
-    .returning()
+  completeEnrollmentIfFinished(userId, lessonId);
+
+  return progress;
+}
+
+// Stamps the enrollment's completedAt once every lesson in the course is
+// completed. Once set it is kept: adding lessons later does not un-complete a
+// student, and re-completing a lesson does not move the date.
+function completeEnrollmentIfFinished(userId: number, lessonId: number) {
+  const owner = db
+    .select({ courseId: modules.courseId })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(lessons.id, lessonId))
     .get();
+  if (!owner) return;
+  const { courseId } = owner;
+
+  const enrollment = findEnrollment(userId, courseId);
+  if (!enrollment || enrollment.completedAt) return;
+
+  const total = getTotalLessonCount(courseId);
+  if (total > 0 && getCompletedLessonCount(userId, courseId) === total) {
+    markEnrollmentComplete(userId, courseId);
+  }
 }
 
 export function markLessonInProgress(userId: number, lessonId: number) {
