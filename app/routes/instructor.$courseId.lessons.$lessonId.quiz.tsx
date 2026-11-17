@@ -8,10 +8,8 @@ import { getModuleById } from "~/services/moduleService";
 import {
   getQuizByLessonId,
   getQuizWithQuestions,
-  createQuiz,
+  saveQuiz,
   deleteQuiz,
-  createQuestion,
-  createOption,
 } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
@@ -62,11 +60,13 @@ const wizardDataSchema = z.object({
     .array(
       z.object({
         id: z.string(),
+        dbId: z.number().int().optional(),
         text: z.string(),
         type: z.nativeEnum(QuestionType),
         options: z.array(
           z.object({
             id: z.string(),
+            dbId: z.number().int().optional(),
             text: z.string(),
             isCorrect: z.boolean(),
           })
@@ -88,14 +88,17 @@ const quizActionSchema = z.discriminatedUnion("intent", [
 
 // ─── Types for wizard state ───
 
+// `id` is a client-side key; `dbId` is the stored id, absent until first saved.
 interface WizardOption {
   id: string;
+  dbId?: number;
   text: string;
   isCorrect: boolean;
 }
 
 interface WizardQuestion {
   id: string;
+  dbId?: number;
   text: string;
   type: QuestionType;
   options: WizardOption[];
@@ -228,33 +231,22 @@ export async function action({ params, request }: Route.ActionArgs) {
       return data({ error: "Invalid quiz data." }, { status: 400 });
     }
 
-    // Delete existing quiz if present
-    const existingQuiz = getQuizByLessonId(lessonId);
-    if (existingQuiz) {
-      deleteQuiz(existingQuiz.id);
-    }
-
-    // Create the quiz
-    const quiz = createQuiz(
+    // Update in place so students' attempts on this quiz are kept
+    saveQuiz(
       lessonId,
       wizardData.title.trim(),
-      wizardData.passingScore / 100
+      wizardData.passingScore / 100,
+      wizardData.questions.map((q) => ({
+        id: q.dbId,
+        text: q.text.trim(),
+        type: q.type,
+        options: q.options.map((o) => ({
+          id: o.dbId,
+          text: o.text.trim(),
+          isCorrect: o.isCorrect,
+        })),
+      }))
     );
-
-    // Create questions and options
-    for (let qi = 0; qi < wizardData.questions.length; qi++) {
-      const q = wizardData.questions[qi];
-      const question = createQuestion(
-        quiz.id,
-        q.text.trim(),
-        q.type,
-        qi + 1
-      );
-
-      for (const opt of q.options) {
-        createOption(question.id, opt.text.trim(), opt.isCorrect);
-      }
-    }
 
     return { success: true };
   }
@@ -335,10 +327,12 @@ export default function QuizBuilderWizard({
         passingScore: Math.round(existingQuiz.passingScore * 100),
         questions: existingQuiz.questions.map((q) => ({
           id: generateId(),
+          dbId: q.id,
           text: q.questionText,
           type: q.questionType as QuestionType,
           options: q.options.map((o) => ({
             id: generateId(),
+            dbId: o.id,
             text: o.optionText,
             isCorrect: o.isCorrect,
           })),

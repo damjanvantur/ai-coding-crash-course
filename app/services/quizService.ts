@@ -100,6 +100,141 @@ export function deleteQuiz(id: number) {
   return db.delete(quizzes).where(eq(quizzes.id, id)).returning().get();
 }
 
+// ─── Saving a Whole Quiz ───
+
+export interface SaveQuizOption {
+  id?: number;
+  text: string;
+  isCorrect: boolean;
+}
+
+export interface SaveQuizQuestion {
+  id?: number;
+  text: string;
+  type: QuestionType;
+  options: SaveQuizOption[];
+}
+
+// Saves a lesson's quiz from the full set of questions an instructor submitted.
+// An existing quiz is updated in place so students' attempts survive: questions
+// and options with a known id are edited, ones without are added, and ones left
+// out are removed along with only the answers that pointed at them. Ids that
+// don't belong to this quiz, or repeat one already used, are treated as new.
+export function saveQuiz(
+  lessonId: number,
+  title: string,
+  passingScore: number,
+  questions: SaveQuizQuestion[]
+) {
+  return db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(quizzes)
+      .where(eq(quizzes.lessonId, lessonId))
+      .get();
+
+    const quiz = existing
+      ? tx
+          .update(quizzes)
+          .set({ title, passingScore })
+          .where(eq(quizzes.id, existing.id))
+          .returning()
+          .get()
+      : tx
+          .insert(quizzes)
+          .values({ lessonId, title, passingScore })
+          .returning()
+          .get();
+
+    const storedQuestionIds = new Set(
+      tx
+        .select({ id: quizQuestions.id })
+        .from(quizQuestions)
+        .where(eq(quizQuestions.quizId, quiz.id))
+        .all()
+        .map((q) => q.id)
+    );
+
+    const keptQuestionIds = new Set<number>();
+    questions.forEach((q, index) => {
+      const position = index + 1;
+      let questionId: number;
+
+      if (
+        q.id !== undefined &&
+        storedQuestionIds.has(q.id) &&
+        !keptQuestionIds.has(q.id)
+      ) {
+        questionId = q.id;
+        tx.update(quizQuestions)
+          .set({ questionText: q.text, questionType: q.type, position })
+          .where(eq(quizQuestions.id, questionId))
+          .run();
+      } else {
+        questionId = tx
+          .insert(quizQuestions)
+          .values({
+            quizId: quiz.id,
+            questionText: q.text,
+            questionType: q.type,
+            position,
+          })
+          .returning()
+          .get().id;
+      }
+      keptQuestionIds.add(questionId);
+
+      const storedOptionIds = new Set(
+        tx
+          .select({ id: quizOptions.id })
+          .from(quizOptions)
+          .where(eq(quizOptions.questionId, questionId))
+          .all()
+          .map((o) => o.id)
+      );
+      const keptOptionIds = new Set<number>();
+      for (const opt of q.options) {
+        if (
+          opt.id !== undefined &&
+          storedOptionIds.has(opt.id) &&
+          !keptOptionIds.has(opt.id)
+        ) {
+          tx.update(quizOptions)
+            .set({ optionText: opt.text, isCorrect: opt.isCorrect })
+            .where(eq(quizOptions.id, opt.id))
+            .run();
+          keptOptionIds.add(opt.id);
+        } else {
+          tx.insert(quizOptions)
+            .values({ questionId, optionText: opt.text, isCorrect: opt.isCorrect })
+            .run();
+        }
+      }
+
+      for (const optionId of storedOptionIds) {
+        if (keptOptionIds.has(optionId)) continue;
+        tx.delete(quizAnswers)
+          .where(eq(quizAnswers.selectedOptionId, optionId))
+          .run();
+        tx.delete(quizOptions).where(eq(quizOptions.id, optionId)).run();
+      }
+    });
+
+    for (const questionId of storedQuestionIds) {
+      if (keptQuestionIds.has(questionId)) continue;
+      tx.delete(quizAnswers)
+        .where(eq(quizAnswers.questionId, questionId))
+        .run();
+      tx.delete(quizOptions)
+        .where(eq(quizOptions.questionId, questionId))
+        .run();
+      tx.delete(quizQuestions).where(eq(quizQuestions.id, questionId)).run();
+    }
+
+    return quiz;
+  });
+}
+
 // ─── Question Management ───
 
 export function getQuestionById(id: number) {
