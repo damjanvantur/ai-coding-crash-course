@@ -1670,8 +1670,14 @@ You've completed the Building REST APIs course. You now have the skills to build
     const correctCount = selectedCorrectIndices.length;
     const score = correctCount / totalQuestions;
 
-    // Determine passing based on quiz passingScore (we'll just use 0.7 as default)
-    const passed = score >= 0.7;
+    // Pass when the score meets or exceeds the quiz's own passing score
+    const quiz = db
+      .select({ passingScore: schema.quizzes.passingScore })
+      .from(schema.quizzes)
+      .where(eq(schema.quizzes.id, quizId))
+      .get();
+    if (!quiz) throw new Error(`Quiz not found: ${quizId}`);
+    const passed = score >= quiz.passingScore;
 
     const [attempt] = db
       .insert(schema.quizAttempts)
