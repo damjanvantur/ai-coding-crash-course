@@ -237,6 +237,39 @@ describe("getInstructorAnalytics", () => {
       expect(analytics.summary.completionRate).toBe(0);
     });
 
+    it("leaves zero-lesson courses out of avg progress but counts them as not complete", () => {
+      const empty = createCourse("empty", base.instructor.id);
+      const lessons = createLessons(base.course.id, 2);
+      const other = createUser("Other", "other@example.com");
+      enrollWithProgress(base.user.id, base.course.id, lessons); // 100%
+      enrollWithProgress(other.id, empty.id, []); // no lessons: no progress
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgProgress).toBe(100); // not (100 + 0) / 2
+      expect(analytics.summary.completionRate).toBe(50);
+      expect(courseStats(analytics, empty.id)?.enrollments).toBe(1);
+    });
+
+    it("reports null avg progress when every enrollment is in a zero-lesson course", () => {
+      enrollWithProgress(base.user.id, base.course.id, []);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(analytics.summary.avgProgress).toBeNull();
+      expect(analytics.summary.completionRate).toBe(0);
+    });
+
+    it("reports each course's lesson count, including zero", () => {
+      const empty = createCourse("empty", base.instructor.id);
+      createLessons(base.course.id, 3);
+
+      const analytics = getInstructorAnalytics(base.instructor.id);
+
+      expect(courseStats(analytics, base.course.id)?.lessonCount).toBe(3);
+      expect(courseStats(analytics, empty.id)?.lessonCount).toBe(0);
+    });
+
     it("reports null completion and progress when there are no enrollments", () => {
       createLessons(base.course.id, 2);
 

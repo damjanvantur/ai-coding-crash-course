@@ -1,7 +1,10 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
-import { getCoursesByInstructor, getLessonCountForCourse } from "~/services/courseService";
-import { getInstructorAnalytics } from "~/services/instructorAnalyticsService";
+import { getCoursesByInstructor } from "~/services/courseService";
+import {
+  getInstructorAnalytics,
+  type Percent,
+} from "~/services/instructorAnalyticsService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
@@ -48,34 +51,23 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
-  const instructorCourses = getCoursesByInstructor(currentUserId);
   const analytics = getInstructorAnalytics(currentUserId);
   const statsByCourse = new Map(
     analytics.courses.map((stats) => [stats.courseId, stats])
   );
+  // The analytics service returns an entry, with defaults, for every course
+  // the instructor owns, so every course here has stats.
+  const courses = getCoursesByInstructor(currentUserId).map((course) => ({
+    id: course.id,
+    title: course.title,
+    slug: course.slug,
+    description: course.description,
+    status: course.status,
+    coverImageUrl: course.coverImageUrl,
+    stats: statsByCourse.get(course.id)!,
+  }));
 
-  const coursesWithStats = instructorCourses.map((course) => {
-    const lessonCount = getLessonCountForCourse(course.id);
-    const stats = statsByCourse.get(course.id);
-
-    return {
-      id: course.id,
-      title: course.title,
-      slug: course.slug,
-      description: course.description,
-      status: course.status,
-      coverImageUrl: course.coverImageUrl,
-      lessonCount,
-      enrollmentCount: stats?.enrollments ?? 0,
-      revenueCents: stats?.revenueCents ?? 0,
-      completionRate: stats?.completionRate ?? null,
-      avgQuizScore: stats?.avgQuizScore ?? null,
-      createdAt: course.createdAt,
-      updatedAt: course.updatedAt,
-    };
-  });
-
-  return { courses: coursesWithStats, summary: analytics.summary };
+  return { courses, summary: analytics.summary };
 }
 
 // formatPrice renders 0 as "Free", which reads wrong for earnings.
@@ -83,8 +75,7 @@ function formatRevenue(cents: number) {
   return cents === 0 ? "$0.00" : formatPrice(cents);
 }
 
-// null means "not computable" (e.g. no enrollments), not 0%.
-function formatPercent(value: number | null) {
+function formatPercent(value: Percent) {
   return value === null ? "—" : `${value}%`;
 }
 
@@ -174,11 +165,9 @@ export function HydrateFallback() {
             </CardHeader>
             <CardContent className="flex-1">
               <div className="flex flex-wrap items-center gap-4">
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
+                {Array.from({ length: 5 }).map((_, j) => (
+                  <Skeleton key={j} className="h-4 w-20" />
+                ))}
               </div>
             </CardContent>
             <CardFooter>
@@ -301,34 +290,34 @@ export default function InstructorDashboard({
                   <div className="flex items-center gap-1.5">
                     <BookOpen className="size-4" />
                     <span>
-                      {course.lessonCount}{" "}
-                      {course.lessonCount === 1 ? "lesson" : "lessons"}
+                      {course.stats.lessonCount}{" "}
+                      {course.stats.lessonCount === 1 ? "lesson" : "lessons"}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Users className="size-4" />
                     <span>
-                      {course.enrollmentCount}{" "}
-                      {course.enrollmentCount === 1 ? "student" : "students"}
+                      {course.stats.enrollments}{" "}
+                      {course.stats.enrollments === 1 ? "student" : "students"}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <DollarSign className="size-4" />
-                    <span>{formatRevenue(course.revenueCents)}</span>
+                    <span>{formatRevenue(course.stats.revenueCents)}</span>
                   </div>
                   <div
                     className="flex items-center gap-1.5"
                     title="Completion rate"
                   >
                     <CircleCheck className="size-4" />
-                    <span>{formatPercent(course.completionRate)} complete</span>
+                    <span>{formatPercent(course.stats.completionRate)} complete</span>
                   </div>
                   <div
                     className="flex items-center gap-1.5"
                     title="Avg quiz score"
                   >
                     <ClipboardCheck className="size-4" />
-                    <span>{formatPercent(course.avgQuizScore)}</span>
+                    <span>{formatPercent(course.stats.avgQuizScore)}</span>
                   </div>
                 </div>
               </CardContent>
