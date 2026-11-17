@@ -91,6 +91,11 @@ function scoreTrueFalseQuestions(quizData: any, answers: any): any {
   };
 }
 
+// An attempt passes when its score meets or exceeds the quiz's own passing score.
+function isPassing(score: number, passingScore: number): boolean {
+  return score >= passingScore;
+}
+
 export function getScore(quizId: any, answers: any): any {
   try {
     const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get();
@@ -115,10 +120,7 @@ export function getScore(quizId: any, answers: any): any {
     const totalQuestions = mcResult.total + tfResult.total;
     const overallScore = totalQuestions > 0 ? totalCorrect / totalQuestions : 0;
 
-    let passed = false;
-    if (overallScore > 0.7) {
-      passed = true;
-    }
+    const passed = isPassing(overallScore, quiz.passingScore);
 
     let grade = "F";
     if (overallScore >= 0.9) {
@@ -231,7 +233,7 @@ export function computeResult(
     }
 
     const scoreValue = total > 0 ? correct / total : 0;
-    const passed = scoreValue > 0.7;
+    const passed = isPassing(scoreValue, quiz.passingScore);
     const grade = calculateGrade(scoreValue);
 
     const attempt = db
